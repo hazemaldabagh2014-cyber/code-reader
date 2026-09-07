@@ -39,7 +39,7 @@ let codes=[];
 
 function extract(text){
   text=text.toUpperCase().replace(/[^A-Z0-9-]/g," ");
-  const re=/\\b[A-Z]{3,6}\\d{4,7}(?:-\\d{1,4})?\\b/g;
+  const re=/\b[A-Z]{3,6}\d{4,7}(?:-\d{1,4})?\b/g;
   return text.match(re)||[];
 }
 
@@ -47,9 +47,9 @@ async function getImages(){
   const selected=[...$("files").files];
   let imgs=[];
   for(const f of selected){
-    if(/\\.zip$/i.test(f.name)){
+    if(/\.zip$/i.test(f.name)){
       const z=await JSZip.loadAsync(f);
-      imgs.push(...Object.values(z.files).filter(x=>!x.dir && /\\.(jpe?g|png|webp)$/i.test(x.name)));
+      imgs.push(...Object.values(z.files).filter(x=>!x.dir && /\.(jpe?g|png|webp)$/i.test(x.name)));
     }else if(/^image\\//.test(f.type)){
       imgs.push({name:f.name, async:()=>f});
     }
