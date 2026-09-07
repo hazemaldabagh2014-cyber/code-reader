@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>قارئ ART NO → Excel</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f5f7;margin:0;padding:18px;color:#111}
+.card{max-width:720px;margin:auto;background:#fff;border-radius:20px;padding:20px;box-shadow:0 4px 20px #0001}
+h1{font-size:25px;margin-top:0}.btn{display:block;width:100%;padding:15px;margin:10px 0;border:0;border-radius:12px;background:#111;color:#fff;font-size:17px}
+input{width:100%;padding:12px;box-sizing:border-box}.status{margin:15px 0;padding:12px;background:#f0f0f0;border-radius:12px}
+textarea{width:100%;height:330px;box-sizing:border-box;border-radius:12px;padding:12px;font-size:16px;direction:ltr;white-space:pre-wrap;line-height:1.6}
+.small{color:#666;font-size:14px;line-height:1.7}.ok{background:#e8f7ea}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>📷 قارئ ART NO → Excel</h1>
+<p class="small">
+اختار ZIP أو عدة صور. كل صورة تُقرأ بالنص OCR فقط، ويُؤخذ ART NO المكتوب عليها، وليس الباركود.
+كل ART NO يظهر بسطر مستقل. التكرار بين الصور يبقى موجوداً. ملف Excel يكون: <b>Art No</b> في A و<b>الكمية المطلوبة</b> في B،
+والورقة من اليمين لليسار.
+</p>
+
+<input id="files" type="file" accept=".zip,image/jpeg,image/png,image/webp" multiple>
+<button class="btn" id="start">▶️ ابدأ القراءة</button>
+<div class="status" id="status">بانتظار اختيار الصور أو ZIP...</div>
+<textarea id="out" placeholder="أرقام ART NO تظهر هنا..." readonly></textarea>
+<button class="btn" id="copy">📋 نسخ ART NO</button>
+<button class="btn" id="excel">📊 حفظ Excel</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let codes=[];
+
+function normalizeCandidate(raw){
+  let x=String(raw).toUpperCase().replace(/[^A-Z0-9-]/g,"");
+  // ART NO examples such as JUNB50942: letters followed by digits.
+  const m=x.match(/^([A-Z]{2,8})(\d{4,10})(-\d{1,4})?$/);
+  if(!m) return null;
+  return m[1]+m[2]+(m[3]||"");
+}
+
+function extract(text){
+  text=String(text).toUpperCase().replace(/[^A-Z0-9-\s]/g," ");
+  const out=[];
+  const add=(v)=>{
+    const n=normalizeCandidate(v);
+    if(n && !out.includes(n)) out.push(n);
+  };
+
+  // First: exact contiguous ART NO.
+  for(const t of text.split(/\s+/).filter(Boolean)) add(t);
+
+  // Second: OCR may insert spaces between the letter and number blocks.
+  const compact=text.replace(/\s+/g,"");
+  const re=/[A-Z]{2,8}\d{4,10}(?:-\d{1,4})?/g;
+  for(const t of compact.match(re)||[]) add(t);
+
+  // Third: tolerate common OCR substitutions in the numeric block only.
+  for(const raw of text.split(/\s+/).filter(Boolean)){
+    let x=raw.replace(/[^A-Z0-9]/g,"");
+    const m=x.match(/^([A-Z]{2,8})([A-Z0-9]{4,10})$/);
+    if(m){
+      const digits=m[2].replace(/[ODQILTZSBG]/g,c=>({"O":"0","D":"0","Q":"0","I":"1","L":"1","T":"1","Z":"2","S":"5","B":"8","G":"6"}[c]||c));
+      add(m[1]+digits);
+    }
+  }
+  return out;
+}
+
+async function getImages(){
+  const selected=[...$("files").files];
+  let imgs=[];
+  for(const f of selected){
+    if(/\.zip$/i.test(f.name)){
+      const z=await JSZip.loadAsync(f);
+      imgs.push(...Object.values(z.files).filter(x=>!x.dir && /\.(jpe?g|png|webp)$/i.test(x.name)));
+    }else if(/^image\//i.test(f.type)){
+      imgs.push({name:f.name, async:()=>f});
+    }
+  }
+  return imgs;
+}
+
+$("start").onclick=async()=>{
+  const selected=$("files").files;
+  if(!selected.length){$("status").textContent="⚠️ اختار ZIP أو صورة/صور أولاً";return}
+  codes=[];$("out").value="";
+  try{
+    const imgs=await getImages();
+    if(!imgs.length){$("status").textContent="⚠️ ما لقيت صور.";return}
+    $("status").textContent=`لقيت ${imgs.length} صورة. جاري القراءة...`;
+    const worker=await Tesseract.createWorker("eng");
+    await worker.setParameters({tessedit_char_whitelist:"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-", preserve_interword_spaces:"0"});
+    for(let i=0;i<imgs.length;i++){
+      $("status").textContent=`🔎 استخراج ART NO من الصورة ${i+1} من ${imgs.length}...`;
+      const blob=await imgs[i].async("blob");
+
+      // نحضّر أكثر من نسخة للصورة: أصلية + تكبير/تباين + أبيض وأسود.
+      // هذا يساعد خصوصاً عندما تكون الأرقام صغيرة أو باهتة.
+      async function prepImage(file, mode){
+        const bmp=await createImageBitmap(file);
+        const scale=mode===0 ? 1.5 : 2.5;
+        const c=document.createElement("canvas");
+        c.width=Math.max(1,Math.round(bmp.width*scale));
+        c.height=Math.max(1,Math.round(bmp.height*scale));
+        const ctx=c.getContext("2d",{willReadFrequently:true});
+        ctx.imageSmoothingEnabled=true;
+        ctx.drawImage(bmp,0,0,c.width,c.height);
+        if(mode>0){
+          const im=ctx.getImageData(0,0,c.width,c.height), d=im.data;
+          for(let j=0;j<d.length;j+=4){
+            const y=0.299*d[j]+0.587*d[j+1]+0.114*d[j+2];
+            let v;
+            if(mode===1){
+              v=Math.max(0,Math.min(255,(y-128)*1.8+128));
+            }else{
+              v=y>150?255:0;
+            }
+            d[j]=d[j+1]=d[j+2]=v;
+          }
+          ctx.putImageData(im,0,0);
+        }
+        return await new Promise(r=>c.toBlob(r,"image/png"));
+      }
+
+      const passes=[];
+      for(const mode of [0,1,2]){
+        const prepared=await prepImage(blob,mode);
+        await worker.setParameters({
+          tessedit_char_whitelist:"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-",
+          preserve_interword_spaces:"0",
+          tessedit_pageseg_mode: mode===2 ? "6" : (mode===1 ? "11" : "6")
+        });
+        const res=await worker.recognize(prepared);
+        const f=extract(res.data.text);
+        for(const code of f) passes.push(code);
+      }
+
+      // نختار الكود الذي تكرر بين محاولات القراءة أولاً.
+      // وإذا لم يتكرر، نأخذ أول كود مطابق للتنسيق.
+      const freq={};
+      for(const c of passes) freq[c]=(freq[c]||0)+1;
+      const ranked=[...new Set(passes)].sort((a,b)=>(freq[b]-freq[a]));
+      if(ranked.length) codes.push(ranked[0]);
+      $("out").value=codes.join("\n");
+    }
+    await worker.terminate();
+    $("status").className="status ok";
+    $("status").textContent=`✅ خلصنا — الصور: ${imgs.length} | الأكواد: ${codes.length}`;
+  }catch(e){
+    console.error(e);
+    $("status").className="status";
+    $("status").textContent="❌ صار خطأ: "+e.message;
+  }
+};
+
+$("copy").onclick=async()=>{
+  await navigator.clipboard.writeText($("out").value);
+  $("status").textContent="✅ تم نسخ الأكواد";
+};
+
+$("excel").onclick=async()=>{
+  if(!codes.length){$("status").textContent="⚠️ اقرأ الصور أولاً";return}
+  const rows=codes.map(c=>({"ART NO":c,"الكمية المطلوبة":1}));
+  const ws=XLSX.utils.json_to_sheet(rows,{header:["ART NO","الكمية المطلوبة"]});
+  ws["!cols"]=[{wch:22},{wch:18}];
+
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,"الأكواد");
+
+  // إنشاء XLSX ثم ضبط عرض الورقة من اليمين لليسار.
+  const raw=XLSX.write(wb,{bookType:"xlsx",type:"array"});
+  const zip=await JSZip.loadAsync(raw);
+  const sheetPath="xl/worksheets/sheet1.xml";
+  let xml=await zip.file(sheetPath).async("string");
+  if(xml.includes("<sheetViews>")){
+    xml=xml.replace("<sheetViews>","<sheetViews><sheetView workbookViewId=\"0\" rightToLeft=\"1\"/>");
+  }else{
+    xml=xml.replace("<sheetData>","<sheetViews><sheetView workbookViewId=\"0\" rightToLeft=\"1\"/></sheetViews><sheetData>");
+  }
+  zip.file(sheetPath,xml);
+  const out=await zip.generateAsync({type:"blob",compression:"DEFLATE"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(out);
+  a.download="الأكواد.xlsx";
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  $("status").textContent="✅ تم حفظ ملف Excel — A: ART NO | B: الكمية المطلوبة = 1";
+};
+</script>
+</body>
+</html>
