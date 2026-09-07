@@ -9,7 +9,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
 .card{max-width:720px;margin:auto;background:#fff;border-radius:20px;padding:20px;box-shadow:0 4px 20px #0001}
 h1{font-size:25px;margin-top:0}.btn{display:block;width:100%;padding:15px;margin:10px 0;border:0;border-radius:12px;background:#111;color:#fff;font-size:17px}
 input{width:100%;padding:12px;box-sizing:border-box}.status{margin:15px 0;padding:12px;background:#f0f0f0;border-radius:12px}
-textarea{width:100%;height:330px;box-sizing:border-box;border-radius:12px;padding:12px;font-size:16px;direction:ltr}
+textarea{width:100%;height:330px;box-sizing:border-box;border-radius:12px;padding:12px;font-size:16px;direction:ltr;white-space:pre-wrap;line-height:1.6}
 .small{color:#666;font-size:14px;line-height:1.7}.ok{background:#e8f7ea}
 </style>
 </head>
@@ -18,7 +18,7 @@ textarea{width:100%;height:330px;box-sizing:border-box;border-radius:12px;paddin
 <h1>📷 قارئ الأكواد → Excel</h1>
 <p class="small">
 اختار ZIP أو عدة صور. كل صورة تُقرأ مرة واحدة، ويُؤخذ كود واحد منها.
-التكرار بين الصور يبقى موجوداً. ملف Excel يكون: <b>Art No</b> في A و<b>الكمية المطلوبة</b> في B،
+كل كود يظهر بسطر مستقل. التكرار بين الصور يبقى موجوداً. ملف Excel يكون: <b>Art No</b> في A و<b>الكمية المطلوبة</b> في B،
 والورقة من اليمين لليسار.
 </p>
 
@@ -37,10 +37,31 @@ textarea{width:100%;height:330px;box-sizing:border-box;border-radius:12px;paddin
 const $=id=>document.getElementById(id);
 let codes=[];
 
+function normalizeCandidate(raw){
+  let x=raw.toUpperCase().replace(/[^A-Z0-9-]/g,"");
+  const m=x.match(/^([A-Z0-9]{3,6})([A-Z0-9]{4,7})(-\d{1,4})?$/);
+  if(!m) return null;
+  let letters=m[1].replace(/[0158]/g,c=>({"0":"O","1":"I","5":"S","8":"B"}[c]||c));
+  let digits=m[2].replace(/[ODQILTZSBG]/g,c=>({"O":"0","D":"0","Q":"0","I":"1","L":"1","T":"1","Z":"2","S":"5","B":"8","G":"6"}[c]||c));
+  // Codes used by this workflow have a letter block followed by a digit block.
+  if(!/^[A-Z]{3,6}$/.test(letters) || !/^\d{4,7}$/.test(digits)) return null;
+  return letters+digits+(m[3]||"");
+}
 function extract(text){
-  text=text.toUpperCase().replace(/[^A-Z0-9-]/g," ");
-  const re=/\b[A-Z]{3,6}\d{4,7}(?:-\d{1,4})?\b/g;
-  return text.match(re)||[];
+  // OCR may return real newlines or the literal characters "\\n".
+  text=String(text).replace(/\\\\n/g,"\\n").replace(/\\r/g,"\\n");
+  text=text.toUpperCase().replace(/[^A-Z0-9-]+/g," ");
+  const tokens=text.split(/\\s+/).filter(Boolean);
+  const out=[];
+  for(const t of tokens){
+    const n=normalizeCandidate(t);
+    if(n && !out.includes(n)) out.push(n);
+  }
+  // Also catch a code split by spaces/newlines.
+  const compact=text.replace(/\s+/g,"");
+  const re=/[A-Z0-9]{7,13}(?:-\d{1,4})?/g;
+  for(const t of compact.match(re)||[]){ const n=normalizeCandidate(t); if(n && !out.includes(n)) out.push(n); }
+  return out;
 }
 
 async function getImages(){
@@ -66,14 +87,22 @@ $("start").onclick=async()=>{
     if(!imgs.length){$("status").textContent="⚠️ ما لقيت صور.";return}
     $("status").textContent=`لقيت ${imgs.length} صورة. جاري القراءة...`;
     const worker=await Tesseract.createWorker("eng");
+    await worker.setParameters({tessedit_char_whitelist:"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-", preserve_interword_spaces:"0"});
     for(let i=0;i<imgs.length;i++){
       $("status").textContent=`🔎 قراءة الصورة ${i+1} من ${imgs.length}...`;
       const blob=await imgs[i].async("blob");
-      const res=await worker.recognize(blob);
-      const found=extract(res.data.text);
+      // Two OCR passes improve recognition on small/blurred labels.
+      let res=await worker.recognize(blob);
+      let found=extract(res.data.text);
+      if(!found.length){
+        await worker.setParameters({tessedit_pageseg_mode:"11"});
+        res=await worker.recognize(blob);
+        found=extract(res.data.text);
+        await worker.setParameters({tessedit_pageseg_mode:"6"});
+      }
       // كل صورة = كود واحد فقط، ونأخذ أول كود موثوق يقرأه OCR.
       if(found.length) codes.push(found[0]);
-      $("out").value=codes.join("\\n");
+      $("out").value=codes.join("\n");
     }
     await worker.terminate();
     $("status").className="status ok";
