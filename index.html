@@ -91,17 +91,54 @@ $("start").onclick=async()=>{
     for(let i=0;i<imgs.length;i++){
       $("status").textContent=`🔎 قراءة الصورة ${i+1} من ${imgs.length}...`;
       const blob=await imgs[i].async("blob");
-      // Two OCR passes improve recognition on small/blurred labels.
-      let res=await worker.recognize(blob);
-      let found=extract(res.data.text);
-      if(!found.length){
-        await worker.setParameters({tessedit_pageseg_mode:"11"});
-        res=await worker.recognize(blob);
-        found=extract(res.data.text);
-        await worker.setParameters({tessedit_pageseg_mode:"6"});
+
+      // نحضّر أكثر من نسخة للصورة: أصلية + تكبير/تباين + أبيض وأسود.
+      // هذا يساعد خصوصاً عندما تكون الأرقام صغيرة أو باهتة.
+      async function prepImage(file, mode){
+        const bmp=await createImageBitmap(file);
+        const scale=mode===0 ? 1.5 : 2.5;
+        const c=document.createElement("canvas");
+        c.width=Math.max(1,Math.round(bmp.width*scale));
+        c.height=Math.max(1,Math.round(bmp.height*scale));
+        const ctx=c.getContext("2d",{willReadFrequently:true});
+        ctx.imageSmoothingEnabled=true;
+        ctx.drawImage(bmp,0,0,c.width,c.height);
+        if(mode>0){
+          const im=ctx.getImageData(0,0,c.width,c.height), d=im.data;
+          for(let j=0;j<d.length;j+=4){
+            const y=0.299*d[j]+0.587*d[j+1]+0.114*d[j+2];
+            let v;
+            if(mode===1){
+              v=Math.max(0,Math.min(255,(y-128)*1.8+128));
+            }else{
+              v=y>150?255:0;
+            }
+            d[j]=d[j+1]=d[j+2]=v;
+          }
+          ctx.putImageData(im,0,0);
+        }
+        return await new Promise(r=>c.toBlob(r,"image/png"));
       }
-      // كل صورة = كود واحد فقط، ونأخذ أول كود موثوق يقرأه OCR.
-      if(found.length) codes.push(found[0]);
+
+      const passes=[];
+      for(const mode of [0,1,2]){
+        const prepared=await prepImage(blob,mode);
+        await worker.setParameters({
+          tessedit_char_whitelist:"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-",
+          preserve_interword_spaces:"0",
+          tessedit_pageseg_mode: mode===2 ? "6" : (mode===1 ? "11" : "6")
+        });
+        const res=await worker.recognize(prepared);
+        const f=extract(res.data.text);
+        for(const code of f) passes.push(code);
+      }
+
+      // نختار الكود الذي تكرر بين محاولات القراءة أولاً.
+      // وإذا لم يتكرر، نأخذ أول كود مطابق للتنسيق.
+      const freq={};
+      for(const c of passes) freq[c]=(freq[c]||0)+1;
+      const ranked=[...new Set(passes)].sort((a,b)=>(freq[b]-freq[a]));
+      if(ranked.length) codes.push(ranked[0]);
       $("out").value=codes.join("\n");
     }
     await worker.terminate();
