@@ -50,7 +50,7 @@ async function getImages(){
     if(/\.zip$/i.test(f.name)){
       const z=await JSZip.loadAsync(f);
       imgs.push(...Object.values(z.files).filter(x=>!x.dir && /\.(jpe?g|png|webp)$/i.test(x.name)));
-    }else if(/^image\\//.test(f.type)){
+    }else if(/^image\//i.test(f.type)){
       imgs.push({name:f.name, async:()=>f});
     }
   }
