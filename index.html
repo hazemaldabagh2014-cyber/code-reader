@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>قارئ الأكواد من الصور</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f4f4f6;margin:0;padding:18px}
+.card{max-width:680px;margin:auto;background:#fff;border-radius:22px;padding:20px;box-shadow:0 5px 25px #0002}
+h1{font-size:24px}button{width:100%;padding:15px;margin:8px 0;border:0;border-radius:13px;background:#111;color:#fff;font-size:17px}
+.pick{display:block;border:2px dashed #999;border-radius:15px;padding:18px;text-align:center;margin:15px 0}
+input{width:100%;margin-top:12px}.status{background:#eee;padding:12px;border-radius:12px;margin:12px 0}
+textarea{width:100%;height:350px;box-sizing:border-box;direction:ltr;font-size:16px;padding:12px}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>📷 قارئ الأكواد</h1>
+<p>اختار الصور مباشرة من الآيفون.</p>
+<label class="pick">🖼️ اختيار الصور
+<input id="files" type="file" accept="image/*" multiple>
+</label>
+<button id="start">▶️ ابدأ القراءة</button>
+<div id="status" class="status">جاهز</div>
+<textarea id="out" readonly></textarea>
+<button id="copy">📋 نسخ الأكواد</button>
+<button id="save">💾 حفظ TXT</button>
+</div>
+
+<script>
+const S=document.getElementById("status"),O=document.getElementById("out");
+let worker=null,codes=[];
+function findCodes(t){
+ t=t.toUpperCase().replace(/[^A-Z0-9-]/g," ");
+ return t.match(/\b[A-Z]{3,6}\d{4,7}(?:-\d{1,4})?\b/g)||[];
+}
+async function loadOCR(){
+ if(worker)return worker;
+ S.textContent="⏳ جاري تحميل محرك القراءة أول مرة...";
+ const src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+ if(!window.Tesseract){
+  await new Promise((resolve,reject)=>{
+   const s=document.createElement("script");s.src=src;s.onload=resolve;s.onerror=reject;document.head.appendChild(s);
+  });
+ }
+ worker=await Tesseract.createWorker("eng");
+ return worker;
+}
+document.getElementById("start").onclick=async()=>{
+ const files=[...document.getElementById("files").files];
+ if(!files.length){S.textContent="⚠️ اختار الصور أولاً";return}
+ codes=[];O.value="";
+ try{
+  const w=await loadOCR();
+  for(let i=0;i<files.length;i++){
+   S.textContent=`🔎 قراءة الصورة ${i+1} من ${files.length}`;
+   const r=await w.recognize(files[i]);
+   const found=findCodes(r.data.text);
+   codes.push(...found);
+   O.value=codes.join("\n");
+  }
+  S.textContent=`✅ خلصنا — ${files.length} صورة، ${codes.length} كود`;
+ }catch(e){console.error(e);S.textContent="❌ ما اشتغل محرك القراءة. افتح الصفحة من Safari وتأكد من الإنترنت."}
+};
+document.getElementById("copy").onclick=async()=>{
+ if(!O.value)return;
+ await navigator.clipboard.writeText(O.value);
+ S.textContent="✅ تم نسخ الأكواد";
+};
+document.getElementById("save").onclick=()=>{
+ const a=document.createElement("a");
+ a.href=URL.createObjectURL(new Blob([O.value],{type:"text/plain;charset=utf-8"}));
+ a.download="الأكواد.txt";a.click();
+};
+</script>
+</body>
+</html>
