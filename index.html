@@ -3,74 +3,120 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>قارئ الأكواد من الصور</title>
+<title>قارئ الأكواد → Excel</title>
 <style>
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f4f4f6;margin:0;padding:18px}
-.card{max-width:680px;margin:auto;background:#fff;border-radius:22px;padding:20px;box-shadow:0 5px 25px #0002}
-h1{font-size:24px}button{width:100%;padding:15px;margin:8px 0;border:0;border-radius:13px;background:#111;color:#fff;font-size:17px}
-.pick{display:block;border:2px dashed #999;border-radius:15px;padding:18px;text-align:center;margin:15px 0}
-input{width:100%;margin-top:12px}.status{background:#eee;padding:12px;border-radius:12px;margin:12px 0}
-textarea{width:100%;height:350px;box-sizing:border-box;direction:ltr;font-size:16px;padding:12px}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f5f7;margin:0;padding:18px;color:#111}
+.card{max-width:720px;margin:auto;background:#fff;border-radius:20px;padding:20px;box-shadow:0 4px 20px #0001}
+h1{font-size:25px;margin-top:0}.btn{display:block;width:100%;padding:15px;margin:10px 0;border:0;border-radius:12px;background:#111;color:#fff;font-size:17px}
+input{width:100%;padding:12px;box-sizing:border-box}.status{margin:15px 0;padding:12px;background:#f0f0f0;border-radius:12px}
+textarea{width:100%;height:330px;box-sizing:border-box;border-radius:12px;padding:12px;font-size:16px;direction:ltr}
+.small{color:#666;font-size:14px;line-height:1.7}.ok{background:#e8f7ea}
 </style>
 </head>
 <body>
 <div class="card">
-<h1>📷 قارئ الأكواد</h1>
-<p>اختار الصور مباشرة من الآيفون.</p>
-<label class="pick">🖼️ اختيار الصور
-<input id="files" type="file" accept="image/*" multiple>
-</label>
-<button id="start">▶️ ابدأ القراءة</button>
-<div id="status" class="status">جاهز</div>
-<textarea id="out" readonly></textarea>
-<button id="copy">📋 نسخ الأكواد</button>
-<button id="save">💾 حفظ TXT</button>
+<h1>📷 قارئ الأكواد → Excel</h1>
+<p class="small">
+اختار ZIP أو عدة صور. كل صورة تُقرأ مرة واحدة، ويُؤخذ كود واحد منها.
+التكرار بين الصور يبقى موجوداً. ملف Excel يكون: <b>Art No</b> في A و<b>الكمية المطلوبة</b> في B،
+والورقة من اليمين لليسار.
+</p>
+
+<input id="files" type="file" accept=".zip,image/jpeg,image/png,image/webp" multiple>
+<button class="btn" id="start">▶️ ابدأ القراءة</button>
+<div class="status" id="status">بانتظار اختيار الصور أو ZIP...</div>
+<textarea id="out" placeholder="الأكواد تظهر هنا..." readonly></textarea>
+<button class="btn" id="copy">📋 نسخ الأكواد</button>
+<button class="btn" id="excel">📊 حفظ Excel</button>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script>
-const S=document.getElementById("status"),O=document.getElementById("out");
-let worker=null,codes=[];
-function findCodes(t){
- t=t.toUpperCase().replace(/[^A-Z0-9-]/g," ");
- return t.match(/\b[A-Z]{3,6}\d{4,7}(?:-\d{1,4})?\b/g)||[];
+const $=id=>document.getElementById(id);
+let codes=[];
+
+function extract(text){
+  text=text.toUpperCase().replace(/[^A-Z0-9-]/g," ");
+  const re=/\\b[A-Z]{3,6}\\d{4,7}(?:-\\d{1,4})?\\b/g;
+  return text.match(re)||[];
 }
-async function loadOCR(){
- if(worker)return worker;
- S.textContent="⏳ جاري تحميل محرك القراءة أول مرة...";
- const src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
- if(!window.Tesseract){
-  await new Promise((resolve,reject)=>{
-   const s=document.createElement("script");s.src=src;s.onload=resolve;s.onerror=reject;document.head.appendChild(s);
-  });
- }
- worker=await Tesseract.createWorker("eng");
- return worker;
-}
-document.getElementById("start").onclick=async()=>{
- const files=[...document.getElementById("files").files];
- if(!files.length){S.textContent="⚠️ اختار الصور أولاً";return}
- codes=[];O.value="";
- try{
-  const w=await loadOCR();
-  for(let i=0;i<files.length;i++){
-   S.textContent=`🔎 قراءة الصورة ${i+1} من ${files.length}`;
-   const r=await w.recognize(files[i]);
-   const found=findCodes(r.data.text);
-   codes.push(...found);
-   O.value=codes.join("\n");
+
+async function getImages(){
+  const selected=[...$("files").files];
+  let imgs=[];
+  for(const f of selected){
+    if(/\\.zip$/i.test(f.name)){
+      const z=await JSZip.loadAsync(f);
+      imgs.push(...Object.values(z.files).filter(x=>!x.dir && /\\.(jpe?g|png|webp)$/i.test(x.name)));
+    }else if(/^image\\//.test(f.type)){
+      imgs.push({name:f.name, async:()=>f});
+    }
   }
-  S.textContent=`✅ خلصنا — ${files.length} صورة، ${codes.length} كود`;
- }catch(e){console.error(e);S.textContent="❌ ما اشتغل محرك القراءة. افتح الصفحة من Safari وتأكد من الإنترنت."}
+  return imgs;
+}
+
+$("start").onclick=async()=>{
+  const selected=$("files").files;
+  if(!selected.length){$("status").textContent="⚠️ اختار ZIP أو صورة/صور أولاً";return}
+  codes=[];$("out").value="";
+  try{
+    const imgs=await getImages();
+    if(!imgs.length){$("status").textContent="⚠️ ما لقيت صور.";return}
+    $("status").textContent=`لقيت ${imgs.length} صورة. جاري القراءة...`;
+    const worker=await Tesseract.createWorker("eng");
+    for(let i=0;i<imgs.length;i++){
+      $("status").textContent=`🔎 قراءة الصورة ${i+1} من ${imgs.length}...`;
+      const blob=await imgs[i].async("blob");
+      const res=await worker.recognize(blob);
+      const found=extract(res.data.text);
+      // كل صورة = كود واحد فقط، ونأخذ أول كود موثوق يقرأه OCR.
+      if(found.length) codes.push(found[0]);
+      $("out").value=codes.join("\\n");
+    }
+    await worker.terminate();
+    $("status").className="status ok";
+    $("status").textContent=`✅ خلصنا — الصور: ${imgs.length} | الأكواد: ${codes.length}`;
+  }catch(e){
+    console.error(e);
+    $("status").className="status";
+    $("status").textContent="❌ صار خطأ: "+e.message;
+  }
 };
-document.getElementById("copy").onclick=async()=>{
- if(!O.value)return;
- await navigator.clipboard.writeText(O.value);
- S.textContent="✅ تم نسخ الأكواد";
+
+$("copy").onclick=async()=>{
+  await navigator.clipboard.writeText($("out").value);
+  $("status").textContent="✅ تم نسخ الأكواد";
 };
-document.getElementById("save").onclick=()=>{
- const a=document.createElement("a");
- a.href=URL.createObjectURL(new Blob([O.value],{type:"text/plain;charset=utf-8"}));
- a.download="الأكواد.txt";a.click();
+
+$("excel").onclick=async()=>{
+  if(!codes.length){$("status").textContent="⚠️ اقرأ الصور أولاً";return}
+  const rows=codes.map(c=>({"Art No":c,"الكمية المطلوبة":1}));
+  const ws=XLSX.utils.json_to_sheet(rows,{header:["Art No","الكمية المطلوبة"]});
+  ws["!cols"]=[{wch:22},{wch:18}];
+
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,"الأكواد");
+
+  // إنشاء XLSX ثم ضبط عرض الورقة من اليمين لليسار.
+  const raw=XLSX.write(wb,{bookType:"xlsx",type:"array"});
+  const zip=await JSZip.loadAsync(raw);
+  const sheetPath="xl/worksheets/sheet1.xml";
+  let xml=await zip.file(sheetPath).async("string");
+  if(xml.includes("<sheetViews>")){
+    xml=xml.replace("<sheetViews>","<sheetViews><sheetView workbookViewId=\"0\" rightToLeft=\"1\"/>");
+  }else{
+    xml=xml.replace("<sheetData>","<sheetViews><sheetView workbookViewId=\"0\" rightToLeft=\"1\"/></sheetViews><sheetData>");
+  }
+  zip.file(sheetPath,xml);
+  const out=await zip.generateAsync({type:"blob",compression:"DEFLATE"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(out);
+  a.download="الأكواد.xlsx";
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  $("status").textContent="✅ تم حفظ ملف Excel — A: Art No | B: الكمية المطلوبة = 1";
 };
 </script>
 </body>
